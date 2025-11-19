@@ -13,3 +13,5 @@ Topics covered:
 - Deploying models with FastAPI, uv, Docker, and cloud platforms
 - Using Kubernetes for ML model serving
 - Deep learning with PyTorch and TensorFlow
+
+https://github.com/DataTalksClub/machine-learning-zoomcamp
