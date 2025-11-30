@@ -11,8 +11,9 @@ from sklearn.ensemble import RandomForestRegressor
 from matplotlib import pyplot as plt
 import xgboost as xgb
 import pickle
+from transform import transform
 
-data = 'mazowieckie-spring25.csv'
+data = pd.read_csv('mazowieckie-spring25.csv')
 df_final_cleaned = transform(data)
 
 # 1. Split the raw dataframe

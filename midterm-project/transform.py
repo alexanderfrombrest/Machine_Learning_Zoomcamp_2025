@@ -1,235 +1,193 @@
 import pandas as pd
+import numpy as np
 import ast
-import numpy as np
-import sklearn
 from sklearn.preprocessing import MultiLabelBinarizer
-from sklearn.model_selection import train_test_split
-from sklearn.feature_extraction import DictVectorizer
-from sklearn.metrics import mean_squared_error, root_mean_squared_error
-from sklearn.tree import export_text
-from sklearn.ensemble import RandomForestRegressor
-from matplotlib import pyplot as plt
-import xgboost as xgb
-import numpy as np
+
+# --- Configuration & Constants ---
+
+WARSAW_CENTER_LAT = 52.2286
+WARSAW_CENTER_LON = 21.0031
+
+# Features that should exist in the dataframe (excluding target for safety)
+# Note: 'price' is handled separately to allow this function to work for inference.
+BASE_FEATURES = [
+    'area', 'buildYear', 'buildingFloorsNumber', 'floorNumber', 'roomsNum',
+    'location_latitude', 'location_longitude', 'market', 'buildingMaterial',
+    'constructionStatus', 'ownership', 'userType', 'location_district', 'features'
+]
+
+FEATURES_TO_ENGINEER = [
+    'taras', 'ogródek', 'winda', 'balkon', 'klimatyzacja', 'pom. użytkowe',
+    'piwnica', 'dwupoziomowe', 'garaż/miejsce parkingowe',
+    'oddzielna kuchnia', 'teren zamknięty'
+]
+
+FLOOR_MAP = {
+    'cellar': -1, 'ground_floor': 0, 'floor_1': 1, 'floor_2': 2, 'floor_3': 3,
+    'floor_4': 4, 'floor_5': 5, 'floor_6': 6, 'floor_7': 7, 'floor_8': 8,
+    'floor_9': 9, 'floor_10': 10, 'floor_higher_10': 11
+}
+
+STATUS_MAP = {
+    'to_renovation': -1,
+    'to_completion': 0,
+    'ready_to_use': 1,
+    np.nan: 0
+}
+
+COLUMNS_TO_ONEHOT = ['market', 'buildingMaterial', 'userType', 'ownership']
 
 
-pd.set_option('display.max_columns', None)
-
+# --- Helper Functions ---
 
 def haversine_vectorized(lat1, lon1, lat2, lon2):
     """
-    Calculate the great-circle distance in kilometers between two points
-    (specified in decimal degrees) on the earth.
-
-    This is a vectorized implementation using NumPy.
-
-    Parameters:
-    lat1, lon1: NumPy arrays of latitudes and longitudes for the first set of points.
-    lat2, lon2: NumPy arrays (or single values) for the second set of points.
-
-    Returns:
-    A NumPy array containing the distances in kilometers.
+    Calculate the great-circle distance in kilometers between two points using NumPy.
     """
-    # Mean Earth radius in kilometers
-    R = 6371.0
+    R = 6371.0 # Radius of Earth in km
+    
+    lat1_rad, lon1_rad = np.radians(lat1), np.radians(lon1)
+    lat2_rad, lon2_rad = np.radians(lat2), np.radians(lon2)
 
-    # Convert decimal degrees to radians
-    lat1_rad = np.radians(lat1)
-    lon1_rad = np.radians(lon1)
-    lat2_rad = np.radians(lat2)
-    lon2_rad = np.radians(lon2)
-
-    # Haversine formula
     dlon = lon2_rad - lon1_rad
     dlat = lat2_rad - lat1_rad
 
     a = np.sin(dlat / 2)**2 + np.cos(lat1_rad) * np.cos(lat2_rad) * np.sin(dlon / 2)**2
     c = 2 * np.arcsin(np.sqrt(a))
 
-    distance_km = R * c
-    return distance_km
-
+    return R * c
 
 def safe_convert_to_list(x):
+    """
+    Safely evaluates a string as a Python list. Returns NaN on failure.
+    """
     if pd.isna(x):
-        return np.nan # Keep NaN as NaN
+        return np.nan
     try:
-        # This safely evaluates the string as a Python literal (a list)
         return ast.literal_eval(x)
     except (ValueError, SyntaxError):
-        # If it's not a valid list string (e.g., 'not a list')
-        return np.nan # Treat bad data as missing
+        return np.nan
 
 
-df = pd.read_csv('mazowieckie-spring25.csv', encoding ='utf-8')
+# --- Main Transformation Logic ---
 
-# Filter only Warsaw
-df = df[df['city'] == 'warszawa']
-df.reset_index(inplace=True)
+def transform(data: pd.DataFrame, drop_outliers: bool = True):
+    """
+    Cleans, engineers features, and prepares the dataframe for training or inference.
+    
+    Args:
+        data (pd.DataFrame): Raw input data.
+        drop_outliers (bool): If True, drops price outliers. Should be False during inference.
+    
+    Returns:
+        pd.DataFrame: Processed dataframe ready for the model.
+    """
+    # 1. Avoid modifying the original dataframe
+    df = data.copy()
 
+    # 2. Filter Scope (Warsaw only)
+    # We use .get() just in case 'city' is missing in future inputs, though expected
+    if 'city' in df.columns:
+        df = df[df['city'] == 'warszawa'].copy()
+    
+    # 3. Select relevant columns
+    # We include 'price' only if it exists in the input
+    cols_to_keep = BASE_FEATURES.copy()
+    if 'price' in df.columns:
+        cols_to_keep.append('price')
+    
+    # Filter columns that actually exist in the input to prevent KeyErrors
+    cols_present = [c for c in cols_to_keep if c in df.columns]
+    df = df[cols_present]
 
-features_and_target = [
-    # --- Group 0: Target variable
-    'price',
+    # 4. Feature Engineering: Location Distance
+    df['distance_from_center'] = haversine_vectorized(
+        df['location_latitude'], df['location_longitude'], 
+        WARSAW_CENTER_LAT, WARSAW_CENTER_LON
+    )
 
-    # --- Group 1: Numerical Features
-    'area',
-    'buildYear',
-    'buildingFloorsNumber',
-    'floorNumber',
-    'roomsNum',
-    'location_latitude',
-    'location_longitude',
+    # 5. Feature Engineering: "Features" column (MultiLabelBinarizer)
+    df['features'] = df['features'].apply(safe_convert_to_list)
+    
+    # Initialize MLB
+    mlb = MultiLabelBinarizer()
+    # We fit transform, but we must ensure we only keep the ones we care about
+    # Logic: fit on current batch, but then reindex to ensure consistent columns
+    features_encoded = pd.DataFrame(
+        mlb.fit_transform(df['features'].dropna()),
+        columns=mlb.classes_,
+        index=df.index[df['features'].notna()]
+    )
+    
+    # If a row had NaN features, fill with 0
+    features_encoded = features_encoded.reindex(df.index, fill_value=0)
 
-    # --- Group 2: Categorical Features (Need Encoding)
-    # We need to encode them (e.g., One-Hot, Target, or Label Encoding).
-    'market',
-    'buildingMaterial',
-    'constructionStatus',
-    'ownership',
-    'userType',
-    'location_district',
+    # Keep only the specific engineered features we want; fill missing columns with 0
+    for col in FEATURES_TO_ENGINEER:
+        if col not in features_encoded.columns:
+            features_encoded[col] = 0
+    
+    df = pd.concat([df, features_encoded[FEATURES_TO_ENGINEER]], axis=1)
+    df = df.drop(columns=['features'])
 
-    # --- Group 3: List/Text Features (Need Engineering)
-    'features'
-]
+    # 6. Numeric Mapping & Cleaning
+    
+    # Floor Number
+    df['floor_numeric'] = df['floorNumber'].map(FLOOR_MAP)
+    df['floor_numeric'] = pd.to_numeric(df['floor_numeric'], errors='coerce')
+    # Simple imputation (ideally should be calculated on train set)
+    df['floor_numeric'] = df['floor_numeric'].fillna(df['floor_numeric'].median())
+    df = df.drop(columns=['floorNumber'])
 
-df = df[features_and_target]
+    # Rooms
+    df['roomsNum'] = df['roomsNum'].replace('more', 11)
+    df['roomsNum'] = pd.to_numeric(df['roomsNum'], errors='coerce')
 
-# Warsaw city center coordinates to calculate distance from center
-WARSAW_CENTER_LAT = 52.2286
-WARSAW_CENTER_LON = 21.0031
+    # Construction Status
+    df['constructionStatus_numeric'] = df['constructionStatus'].map(STATUS_MAP)
+    df['constructionStatus_numeric'] = df['constructionStatus_numeric'].fillna(0)
+    df = df.drop(columns=['constructionStatus'])
 
-df['distance_from_center'] = haversine_vectorized(df['location_latitude'], df['location_longitude'], WARSAW_CENTER_LAT, WARSAW_CENTER_LON)
-df['features'] = df['features'].apply(safe_convert_to_list)
+    # Impute other numerics
+    df['buildYear'] = df['buildYear'].fillna(df['buildYear'].median())
+    df['buildingFloorsNumber'] = df['buildingFloorsNumber'].fillna(df['buildingFloorsNumber'].median())
 
+    # 7. One-Hot Encoding (Categorical)
+    df = pd.get_dummies(
+        df, 
+        columns=COLUMNS_TO_ONEHOT, 
+        dummy_na=True, 
+        drop_first=False
+    )
 
-# Features columns has many features of property. We should take the most important of them (features_to_engineer).
-# After that we should use multi-label binarization technique, since one property has many features. We will encode all the important features as 0/1 columns using **MultiLabelBinarizer**
+    # 8. Target Handling (Price)
+    if 'price' in df.columns:
+        # Drop rows with no price info
+        df = df.dropna(subset=['price'])
+        
+        # Outlier Removal (Only if requested, typically for Training)
+        if drop_outliers:
+            low = df['price'].quantile(0.01)
+            high = df['price'].quantile(0.965)
+            df = df[(df['price'] > low) & (df['price'] < high)]
 
-features_to_engineer = [
-    'taras',
-    'ogródek',
-    'winda',
-    'balkon',
-    'klimatyzacja',
-    'pom. użytkowe',
-    'piwnica',
-    'dwupoziomowe',
-    'garaż/miejsce parkingowe',
-    'oddzielna kuchnia',
-    'teren zamknięty'
-]
+        # Log Transform
+        df['price_log'] = np.log1p(df['price'])
+        
+        # Reset index after filtering
+        df = df.reset_index(drop=True)
 
-mlb = MultiLabelBinarizer()
+    return df
 
-encoded_df = pd.DataFrame(mlb.fit_transform(df['features']), columns=mlb.classes_, index=df.index)
-
-encoded_df = encoded_df[features_to_engineer]
-df_final = pd.concat([df, encoded_df], axis=1)
-df_final = df_final.drop(columns=['features'])
-
-
-# Now lets fix the values of floorNumber column
-df_final.floorNumber.unique()
-df_final.buildingFloorsNumber.unique()
-
-# Map the floor strings to numeric values
-
-
-floor_map = {
-    'cellar': -1,
-    'ground_floor': 0,
-    'floor_1': 1,
-    'floor_2': 2,
-    'floor_3': 3,
-    'floor_4': 4,
-    'floor_5': 5,
-    'floor_6': 6,
-    'floor_7': 7,
-    'floor_8': 8,
-    'floor_9': 9,
-    'floor_10': 10,
-    'floor_higher_10': 11  # Using 11 to maintain the order (it's > 10)
-}
-
-df_final['floor_numeric'] = df_final['floorNumber'].map(floor_map)
-df_final = df_final.drop(columns=['floorNumber'])
-df_final['floor_numeric'] = df_final['floor_numeric'].astype('float64')
-median_floor = df_final['floor_numeric'].median(skipna=True)
-df_final['floor_numeric'] = df_final['floor_numeric'].fillna(median_floor)
-
-
-
-df_final = df_final.dropna(subset=['price']).reset_index(drop=True)
-
-
-df_final['roomsNum'] = df_final['roomsNum'].replace('more', 11)
-df_final['roomsNum'] = pd.to_numeric(df_final['roomsNum'], errors='coerce')
-
-# 1. Define the logical order
-# We assign numbers based on value. 'nan' can be a neutral 0.
-status_map = {
-    'to_renovation': -1,  # Lowest value
-    'to_completion': 0,   # Neutral/Primary market
-    'ready_to_use': 1,    # Highest value
-    np.nan: 0             # Assign 'nan' to the neutral category
-}
-
-# 2. Map the values and fill any that were missed (just in case)
-df_final['constructionStatus_numeric'] = df_final['constructionStatus'].map(status_map)
-df_final['constructionStatus_numeric'].fillna(0, inplace=True)
-
-# 3. Drop the original column
-df_final = df_final.drop('constructionStatus', axis=1)
-
-
-# 3. The High-Cardinality Column: location_district
-# Your location_district column is also an object and likely has many unique values (e.g., 20+ districts).
-# 
-# Bad Method: One-Hot Encoding (pd.get_dummies) would create 20+ new columns, which is inefficient.
-# 
-# Best Method: Target Encoding.
-# 
-# Target Encoding is a powerful technique that replaces the district's name with a number. The number it uses is the average price for that district. This is an extremely strong signal for your model.
-# 
-# The easiest way to do this is with the category_encoders library.
-
-
-# 1. List the columns you want to encode
-columns_to_onehot = ['market', 'buildingMaterial', 'userType', 'ownership']
-
-# 2. Use pd.get_dummies
-# dummy_na=True is a great trick! It will create a new column 
-# like 'buildingMaterial_nan', which is a very strong signal.
-df_final = pd.get_dummies(
-    df_final, 
-    columns=columns_to_onehot, 
-    dummy_na=True,  # Creates a column for 'nan' values
-    drop_first=False  # Keeps all categories
-)
-
-
-median_year = df_final['buildYear'].median(skipna=True)
-median_building_floors_number = df_final['buildingFloorsNumber'].median(skipna=True)
-
-df_final['buildYear'] = df_final['buildYear'].fillna(median_year)
-df_final['buildingFloorsNumber'] = df_final['buildingFloorsNumber'].fillna(median_building_floors_number)
-
-
-
-df_final_cleaned = df_final.copy()
-
-
-low = df_final_cleaned['price'].quantile(0.01)
-high = df_final_cleaned['price'].quantile(0.965)
-print((low, high))
-
-# Values are quite reasonable: on market we rarely see flats below 400k, for Warsaw is even 500k.
-# As well as 5M flats are quite rare. We can even take 3M, lets remove 3%+ the most expensive.
-
-df_final_cleaned = df_final_cleaned[(df_final_cleaned['price']>low) & (df_final_cleaned['price']<high)]
-
-# Convert price to log(price)
-df_final_cleaned.reset_index(drop=True)
-df_final_cleaned['price_log'] = np.log1p(df_final_cleaned['price'])
+if __name__ == "__main__":
+    # Test the function if run directly
+    print("Running transform on local CSV...")
+    try:
+        raw_df = pd.read_csv('mazowieckie-spring25.csv', encoding='utf-8')
+        processed_df = transform(raw_df)
+        print("Transformation successful!")
+        print(f"Original shape: {raw_df.shape}")
+        print(f"Processed shape: {processed_df.shape}")
+        print(processed_df.head(3))
+    except FileNotFoundError:
+        print("CSV file not found. Please ensure 'mazowieckie-spring25.csv' is in the folder.")
