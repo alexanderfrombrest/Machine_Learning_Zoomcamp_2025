@@ -71,7 +71,7 @@ def safe_convert_to_list(x):
 
 # --- Main Transformation Logic ---
 
-def transform(data: pd.DataFrame, drop_outliers: bool = True):
+def transform(data: pd.DataFrame, drop_outliers: bool = False):
     """
     Cleans, engineers features, and prepares the dataframe for training or inference.
     
@@ -82,6 +82,25 @@ def transform(data: pd.DataFrame, drop_outliers: bool = True):
     Returns:
         pd.DataFrame: Processed dataframe ready for the model.
     """
+
+
+    EXPECTED_COLUMNS = ['area', 'buildYear', 'buildingFloorsNumber', 'roomsNum',
+       'location_latitude', 'location_longitude', 'location_district',
+       'distance_from_center', 'taras', 'ogródek', 'winda', 'balkon',
+       'klimatyzacja', 'pom. użytkowe', 'piwnica', 'dwupoziomowe',
+       'garaż/miejsce parkingowe', 'oddzielna kuchnia', 'teren zamknięty',
+       'floor_numeric', 'constructionStatus_numeric', 'market_PRIMARY',
+       'market_SECONDARY', 'market_nan', 'buildingMaterial_breezeblock',
+       'buildingMaterial_brick', 'buildingMaterial_cellular_concrete',
+       'buildingMaterial_concrete', 'buildingMaterial_concrete_plate',
+       'buildingMaterial_hydroton', 'buildingMaterial_other',
+       'buildingMaterial_reinforced_concrete', 'buildingMaterial_silikat',
+       'buildingMaterial_wood', 'buildingMaterial_nan', 'userType_agency',
+       'userType_developer', 'userType_private', 'userType_nan',
+       'ownership_full_ownership', 'ownership_limited_ownership',
+       'ownership_share', 'ownership_usufruct', 'ownership_nan']
+
+
     # 1. Avoid modifying the original dataframe
     df = data.copy()
 
@@ -160,6 +179,12 @@ def transform(data: pd.DataFrame, drop_outliers: bool = True):
         drop_first=False
     )
 
+    if EXPECTED_COLUMNS is not None:
+        # Add missing columns with zeros
+        for col in EXPECTED_COLUMNS:
+            if col not in df.columns:
+                df[col] = 0 
+
     # 8. Target Handling (Price)
     if 'price' in df.columns:
         # Drop rows with no price info
@@ -184,7 +209,7 @@ if __name__ == "__main__":
     print("Running transform on local CSV...")
     try:
         raw_df = pd.read_csv('mazowieckie-spring25.csv', encoding='utf-8')
-        processed_df = transform(raw_df)
+        processed_df = transform(raw_df, drop_outliers=True)
         print("Transformation successful!")
         print(f"Original shape: {raw_df.shape}")
         print(f"Processed shape: {processed_df.shape}")

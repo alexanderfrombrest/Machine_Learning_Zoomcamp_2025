@@ -1,0 +1,26 @@
+# Virtual Environments
+.venv/
+venv/
+ENV/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Data and Models (Avoid pushing large binary files to GitHub)
+*.csv
+*.bin
+*.pkl
+
+# Local environment variables
+.env
+
+# Docker
+.dockerignore
+
+# Git
+.git/
