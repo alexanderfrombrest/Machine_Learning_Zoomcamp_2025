@@ -42,18 +42,25 @@ This project uses **[uv](https://github.com/astral-sh/uv)** for fast dependency 
 ### Installation & Setup
 To reproduce the environment locally, follow these steps:
 
-1.  **Install uv** (if not already installed):
+1.  **Clone and Navigate**:
+    ```bash
+    git clone https://github.com/alexanderfrombrest/Machine_Learning_Zoomcamp_2025.git
+
+    cd Machine_Learning_Zoomcamp_2025/midterm-project
+    ```
+
+2.  **Install uv** (if not already installed):
     ```bash
     pip install uv
     ```
 
-2.  **Sync Dependencies**:
+3.  **Sync Dependencies**:
     This command will create a virtual environment (`.venv`) and install all locked dependencies from `uv.lock`.
     ```bash
     uv sync
     ```
 
-3.  **Activate the Environment**:
+4.  **Activate the Environment**:
     * **Mac/Linux**:
         ```bash
         source .venv/bin/activate
