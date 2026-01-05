@@ -20,6 +20,37 @@ The dataset used for this project is **included in the repository**:
 
 ## 2. EDA
 
+### Target Variable Distribution
+The histogram shows that the raw `price` has a long tail of expensive properties.
+
+![alt text](EDA_images/image.png)
+
+* **Problem:** Models like Linear Regression or even XGBoost can struggle with such skewed targets because they will over-focus on minimizing errors for the massive outliers - ex. very expensive flats.
+* **Solution:** We will use **Log-Transformed Price** (`np.log1p`). 
+`price_log` distribution looks much more similar to a **Normal Distribution (Bell Curve)**.
+
+![alt text](EDA_images/image-1.png)
+
+
+### Numerical Correlations
+
+Heatmap summarizes the linear relationships between numeric features:
+
+* **Price vs. Area (+0.26):** Positive correlation: Larger flats tend to be more expensive.
+* **Price vs. Distance (-0.23):** Negative correlation. As the distance from the Warsaw center increases, the price tends to decrease.
+* **Build Year:** Shows almost zero linear correlation with price globally, likely because both very old (historic) and very new (developer) flats can be expensive, canceling each other out.
+
+![alt text](EDA_images/image-5.png)
+
+
+### Price vs. Area & Outliers
+
+1.  **Main Trend:** There is a clear, dense "cone" of data showing that price increases with area.
+2.  **Outliers:** We will implement **outlier removal** step (removing the top/bottom 1% of prices) to prevent extreme luxury or damaged properties from confusing the model.
+
+
+![alt text](EDA_images/image-4.png)
+
 ## 3. Machine Learning Formulation, Model training
 
 This project is framed as a **Supervised Regression** problem:
